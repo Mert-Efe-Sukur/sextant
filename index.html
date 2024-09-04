@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sun Position Location Estimation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        #fileInput, #calibrateButton {
+            margin-top: 20px;
+            padding: 10px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        canvas {
+            display: block;
+            margin: 20px auto;
+            max-width: 100%;
+        }
+        #results, #log {
+            margin-top: 20px;
+            font-size: 16px;
+        }
+        #map {
+            height: 400px;
+            width: 100%;
+            margin-top: 20px;
+        }
+    </style>
+    <!-- Include Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <!-- Include Tracking.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tracking@1.1.3/build/tracking-min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tracking@1.1.3/build/data/face-min.js"></script>
+    <!-- Include Sensor.js -->
+    <script src="https://cdn.jsdelivr.net/npm/sensor-js@latest/dist/sensor.min.js"></script>
+</head>
+<body>
+
+<h1>Sun Position Location Estimation</h1>
+
+<button id="calibrateButton">Start Calibration</button>
+<input type="file" id="fileInput" accept="image/*" disabled>
+
+<canvas id="snapshot" width="640" height="480"></canvas>
+
+<div id="results">
+    <p>Estimated Latitude: <span id="latitude">N/A</span></p>
+    <p>Estimated Longitude: <span id="longitude">N/A</span></p>
+</div>
+
+<div id="log"></div>
+<div id="map"></div>
+
+<!-- Include Leaflet JavaScript -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+    let calibrationHeading = null;
+    let elevationAngle = null;
+    let azimuthAngle = null;
+    let latitude = 0;
+    let longitude = 0;
+    let map, marker;
+
+    function logMessage(message) {
+        const logDiv = document.getElementById('log');
+        logDiv.innerHTML += `<p>${message}</p>`;
+        console.log(message);
+    }
+
+    // Initialize the map using Leaflet.js and OpenStreetMap
+    function initMap() {
+        logMessage('Initializing map...');
+        map = L.map('map').setView([0, 0], 2); // Set default center and zoom level
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        marker = L.marker([0, 0]).addTo(map)
+            .bindPopup('Estimated Position')
+            .openPopup();
+
+        logMessage('Map initialized.');
+    }
+
+    // Start Sensor.js and handle calibration
+    function startSensors() {
+        logMessage('Initializing sensors...');
+        
+        // Start sensor-js
+        Sensor.start();
+
+        Sensor.on('acceleration', function(acceleration) {
+            logMessage(`Acceleration - X: ${acceleration.x}, Y: ${acceleration.y}, Z: ${acceleration.z}`);
+        });
+
+        Sensor.on('gyroscope', function(gyroscope) {
+            logMessage(`Gyroscope - Alpha: ${gyroscope.alpha}, Beta: ${gyroscope.beta}, Gamma: ${gyroscope.gamma}`);
+        });
+
+        Sensor.on('magnetometer', function(magnetometer) {
+            azimuthAngle = magnetometer.heading; // Compass heading
+            logMessage(`Magnetometer - Heading: ${azimuthAngle}`);
+        });
+    }
+
+    // Handle calibration
+    document.getElementById('calibrateButton').addEventListener('click', function() {
+        if (azimuthAngle !== null) {
+            calibrationHeading = azimuthAngle; // Capture the current heading
+            logMessage(`Calibration complete. Heading recorded: ${calibrationHeading}`);
+            alert("Calibration complete. Please upload an image with the sun centered.");
+            document.getElementById('fileInput').disabled = false;
+        } else {
+            logMessage("No heading data available for calibration.");
+        }
+    });
+
+    // Handle file input and image processing
+    const fileInput = document.getElementById('fileInput');
+    const canvas = document.getElementById('snapshot');
+    const context = canvas.getContext('2d');
+
+    fileInput.addEventListener('change', function(event) {
+        const file = event.target.files[0];
+        if (file) {
+            logMessage(`File selected: ${file.name}`);
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // Initialize Tracking.js
+                    tracking.track('#snapshot', tracking.ColorTracker, {
+                        camera: true
+                    });
+
+                    tracking.ColorTracker.registerColor('sunColor', function(r, g, b) {
+                        // Define color range for detecting the sun (simple example)
+                        return (r > 200 && g > 200 && b < 100);
+                    });
+
+                    const tracker = new tracking.ColorTracker('sunColor');
+                    tracker.on('track', function(event) {
+                        if (event.data.length > 0) {
+                            const box = event.data[0];
+                            const centerX = box.x + box.width / 2;
+                            const centerY = box.y + box.height / 2;
+                            logMessage(`Sun detected at center (${centerX}, ${centerY})`);
+
+                            // Calculate estimated position
+                            const date = new Date();
+                            const utcTime = date.toUTCString();
+
+                            // Use sensor angles and calibration to adjust latitude/longitude
+                            latitude = 90 - elevationAngle; // Rough latitude estimate
+                            longitude = (azimuthAngle - calibrationHeading) % 360; // Adjusted longitude
+
+                            document.getElementById('latitude').textContent = latitude.toFixed(2) + "°";
+                            document.getElementById('longitude').textContent = longitude.toFixed(2) + "°";
+
+                            // Update map with new position
+                            const position = [latitude, longitude];
+                            map.setView(position, 4); // Adjust zoom to 4 for better visibility
+                            marker.setLatLng(position);
+
+                            logMessage(`Location estimated. Latitude: ${latitude.toFixed(2)}, Longitude: ${longitude.toFixed(2)}`);
+                        } else {
+                            logMessage("Sun not detected in image.");
+                        }
+                    });
+
+                    // Start tracking
+                    tracking.track('#snapshot', tracker);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        } else {
+            logMessage("No file selected.");
+        }
+    });
+
+    // Initialize map and start sensors when the page loads
+    window.onload = function() {
+        initMap();
+        startSensors();
+    };
+</script>
+
+</body>
+</html>
